@@ -296,7 +296,7 @@ public class Requests {
      *
      * @param indices The indices to rebuild. Use <tt>null</tt> or <tt>_all</tt> to execute against all indices
      * @return The rebuild request
-     * @see org.elasticsearch.client.IndicesAdminClient#rebuild(org.elassandra.action.admin.indices.rebuild.RebuildRequest)
+     * @see org.elasticsearch.client.IndicesAdminClient#rebuild(org.elassandra.action.admin.indices.rebuild.RebuildRequest, org.elasticsearch.action.ActionListener)
      */
     public static RebuildRequest rebuildRequest(String... indices) {
         return new RebuildRequest(indices);
@@ -307,7 +307,7 @@ public class Requests {
      *
      * @param indices The indices to rebuild. Use <tt>null</tt> or <tt>_all</tt> to execute against all indices
      * @return The reload request
-     * @see org.elasticsearch.client.IndicesAdminClient#reload(org.elassandra.action.admin.indices.reload.ReloadRequest)
+     * @see org.elasticsearch.client.IndicesAdminClient#reload(org.elassandra.action.admin.indices.reload.ReloadRequest, org.elasticsearch.action.ActionListener)
      */
     public static ReloadRequest reloadRequest(String... indices) {
         return new ReloadRequest(indices);
@@ -318,7 +318,7 @@ public class Requests {
      *
      * @param indices The indices to cleanup. Use <tt>null</tt> or <tt>_all</tt> to execute against all indices
      * @return The cleanup request
-     * @see org.elasticsearch.client.IndicesAdminClient#cleanup(org.elassandra.action.admin.indices.cleanup.CleanupRequest)
+     * @see org.elasticsearch.client.IndicesAdminClient#cleanup(org.elassandra.action.admin.indices.cleanup.CleanupRequest, org.elasticsearch.action.ActionListener)
      */
     public static CleanupRequest cleanupRequest(String... indices) {
         return new CleanupRequest(indices);

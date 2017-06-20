@@ -191,6 +191,19 @@
             <scope>test</scope>
         </dependency>
 
+        <dependency>
+            <groupId>javax.interceptor</groupId>
+            <artifactId>javax.interceptor-api</artifactId>
+            <version>1.2</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.ow2.asm</groupId>
+            <artifactId>asm</artifactId>
+            <version>5.0.4</version>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- remove this for java 8 -->
         <dependency>
             <groupId>com.twitter</groupId>

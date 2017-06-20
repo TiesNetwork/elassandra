@@ -41,7 +41,7 @@ public class TokenRangeBuilder extends AbstractRangeBuilder<TokenRangeBuilder> {
     }
 
     /**
-     * Same as {@link #addRange(String, double, double)} but the key will be
+     * Same as {@link #addRange(String, Object, Object)} but the key will be
      * automatically generated based on <code>from</code> and <code>to</code>.
      */
     public TokenRangeBuilder addRange(Object from, Object to) {

@@ -1,7 +1,7 @@
 <component>
     <dependencySets>
         <dependencySet>
-            <outputDirectory>/lib</outputDirectory>
+            <outputDirectory>lib</outputDirectory>
             <useTransitiveDependencies>true</useTransitiveDependencies>
             <useTransitiveFiltering>false</useTransitiveFiltering>
             <useProjectArtifact>false</useProjectArtifact>
@@ -50,7 +50,7 @@
         </fileSet>
         <fileSet>
             <directory>../../core/cassandra/conf</directory>
-            <outputDirectory>/conf</outputDirectory>
+            <outputDirectory>conf</outputDirectory>
             <fileMode>0755</fileMode>
             <directoryMode>0755</directoryMode>
             <lineEnding>unix</lineEnding>
@@ -84,13 +84,17 @@
                 <include>plugin</include>
                 <include>cassandra</include>
                 <include>cassandra.in.sh</include>
+                <include>plugin.bat</include>
+                <include>cassandra.bat</include>
+                <include>cassandra.ps1</include>
+                <include>source-conf.ps1</include>
                 <include>aliases.sh</include>
             </includes>
         </fileSet>
         <fileSet>
             <filtered>true</filtered>
             <directory>../../core/cassandra/bin</directory>
-            <outputDirectory>/bin</outputDirectory>
+            <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
             <lineEnding>dos</lineEnding>
             <includes>
@@ -109,7 +113,7 @@
         <fileSet>
             <filtered>true</filtered>
             <directory>../../core/cassandra/bin</directory>
-            <outputDirectory>/bin</outputDirectory>
+            <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
             <lineEnding>unix</lineEnding>
             <includes>
@@ -146,7 +150,7 @@
         
         <fileSet>
             <directory>../../core/cassandra/lib</directory>
-            <outputDirectory>/lib</outputDirectory>
+            <outputDirectory>lib</outputDirectory>
             <fileMode>0755</fileMode>
             <includes>
                 <include>jsr223/*/**</include>
@@ -159,22 +163,22 @@
         
         <fileSet>
             <directory>.</directory>
-            <outputDirectory>/data</outputDirectory>
+            <outputDirectory>data</outputDirectory>
             <excludes><exclude>*/**</exclude></excludes>
         </fileSet>
         <fileSet>
             <directory>.</directory>
-            <outputDirectory>/work</outputDirectory>
+            <outputDirectory>work</outputDirectory>
             <excludes><exclude>*/**</exclude></excludes>
         </fileSet>
         <fileSet>
             <directory>.</directory>
-            <outputDirectory>/plugins</outputDirectory>
+            <outputDirectory>plugins</outputDirectory>
             <excludes><exclude>*/**</exclude></excludes>
         </fileSet>
         <fileSet>
             <directory>.</directory>
-            <outputDirectory>/logs</outputDirectory>
+            <outputDirectory>logs</outputDirectory>
             <excludes><exclude>*/**</exclude></excludes>
         </fileSet>
         
