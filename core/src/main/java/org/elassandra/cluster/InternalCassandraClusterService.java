@@ -41,6 +41,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import org.apache.cassandra.config.CFMetaData;
@@ -87,9 +88,9 @@ import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.serializers.UUIDSerializer;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.ElassandraDaemon;
-import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.service.QueryState;
 import org.apache.cassandra.service.StorageService;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.transport.Server;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.utils.ByteBufferUtil;
@@ -143,7 +144,6 @@ import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.common.xcontent.json.JsonXContentParser;
-import org.elasticsearch.common.xcontent.support.XContentMapValues;
 import org.elasticsearch.discovery.DiscoveryService;
 import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.index.IndexService;
@@ -217,7 +217,8 @@ public class InternalCassandraClusterService extends InternalClusterService {
     public static final String CLUSTER_PREFIX = "cluster.";
     public static final String INDEX_PREFIX = "index.";
     public static final String TABLE_PREFIX = "";
-    
+    private static final int CREATE_ELASTIC_ADMIN_RETRY_ATTEMPTS = Integer.getInteger(SYSTEM_PREFIX + "create_elastic_admin_retry_attempts", 5);
+
     /**
      * Dynamic mapping update timeout
      */
@@ -496,7 +497,7 @@ public class InternalCassandraClusterService extends InternalClusterService {
         }
         QueryState queryState = new QueryState(clientState);
         QueryOptions queryOptions = QueryOptions.forInternalCalls(cl, serialConsistencyLevel, boundValues);
-        ResultMessage result = QueryProcessor.instance.process(query, queryState, queryOptions);
+        ResultMessage result = QueryProcessor.instance.process(query, queryState, queryOptions, System.nanoTime());
         writetime = queryState.getTimestamp();
         if (result instanceof ResultMessage.Rows)
             return UntypedResultSet.create(((ResultMessage.Rows) result).result);
@@ -1901,7 +1902,7 @@ public class InternalCassandraClusterService extends InternalClusterService {
                             switch (((CollectionType<?>)cd.type).kind) {
                             case LIST :
                             case SET : 
-                                map.put(field, CollectionSerializer.pack(Collections.emptyList(), 0, Server.VERSION_3)); 
+                                map.put(field, CollectionSerializer.pack(Collections.emptyList(), 0, ProtocolVersion.CURRENT)); 
                                 break;
                             case MAP :
                                 break;
@@ -2262,13 +2263,103 @@ public class InternalCassandraClusterService extends InternalClusterService {
     @Override
     public int getLocalDataCenterSize() {
         int count = 1; 
-        for (UntypedResultSet.Row row : executeInternal("SELECT data_center from system." + SystemKeyspace.PEERS))
-            if (DatabaseDescriptor.getLocalDataCenter().equals(row.getString("data_center")))
+        for (UntypedResultSet.Row row : executeInternal("SELECT data_center, rpc_address FROM system." + SystemKeyspace.PEERS))
+            if (row.has("rpc_address") && DatabaseDescriptor.getLocalDataCenter().equals(row.getString("data_center")))
                 count++;
         logger.info(" datacenter=[{}] size={} from peers", DatabaseDescriptor.getLocalDataCenter(), count);
         return count;
     }
-    
+
+
+    Void createElasticAdminKeyspace()  {
+        try {
+            Map<String, String> replication = new HashMap<String, String>();
+
+            replication.put("class", NetworkTopologyStrategy.class.getName());
+            replication.put(DatabaseDescriptor.getLocalDataCenter(), Integer.toString(getLocalDataCenterSize()));
+
+            String createKeyspace = String.format(Locale.ROOT, "CREATE KEYSPACE IF NOT EXISTS \"%s\" WITH replication = %s;",
+                elasticAdminKeyspaceName, FBUtilities.json(replication).replaceAll("\"", "'"));
+            logger.info(createKeyspace);
+            process(ConsistencyLevel.LOCAL_ONE, ClientState.forInternalCalls(), createKeyspace);
+        } catch (Exception e) {
+            logger.error("Failed to initialize keyspace {}", elasticAdminKeyspaceName, e);
+            throw e;
+        }
+        return null;
+    }
+
+    // Modify keyspace replication
+    void alterElasticAdminKeyspaceReplication(Map<String,String> replication) {
+        logger.debug("keyspace={} replication={}", elasticAdminKeyspaceName, replication);
+
+        if (!NetworkTopologyStrategy.class.getName().equals(replication.get("class")))
+            throw new ConfigurationException("Keyspace ["+this.elasticAdminKeyspaceName+"] should use "+NetworkTopologyStrategy.class.getName()+" replication strategy");
+
+        int currentRF = -1;
+        if (replication.get(DatabaseDescriptor.getLocalDataCenter()) != null) {
+            currentRF = Integer.valueOf(replication.get(DatabaseDescriptor.getLocalDataCenter()).toString());
+        }
+        int targetRF = getLocalDataCenterSize();
+        if (targetRF != currentRF) {
+            replication.put(DatabaseDescriptor.getLocalDataCenter(), Integer.toString(targetRF));
+            try {
+                String query = String.format(Locale.ROOT, "ALTER KEYSPACE \"%s\" WITH replication = %s",
+                    elasticAdminKeyspaceName, FBUtilities.json(replication).replaceAll("\"", "'"));
+                logger.info(query);
+                process(ConsistencyLevel.LOCAL_ONE, ClientState.forInternalCalls(), query);
+            } catch (Throwable e) {
+                logger.error("Failed to alter keyspace [{}]", e, this.elasticAdminKeyspaceName);
+                throw e;
+            }
+        } else {
+            logger.info("Keep unchanged keyspace={} datacenter={} RF={}", elasticAdminKeyspaceName, DatabaseDescriptor.getLocalDataCenter(), targetRF);
+        }
+    }
+
+    // Create The meta Data Table if needed
+    Void createElasticAdminMetaTable(final String metaDataString) {
+        try {
+            String createTable = String.format(Locale.ROOT, "CREATE TABLE IF NOT EXISTS \"%s\".%s ( cluster_name text PRIMARY KEY, owner uuid, version bigint, metadata text) WITH comment='%s';",
+                elasticAdminKeyspaceName, ELASTIC_ADMIN_METADATA_TABLE, metaDataString);
+            logger.info(createTable);
+            process(ConsistencyLevel.LOCAL_ONE, ClientState.forInternalCalls(), createTable);
+
+        } catch (Exception e) {
+            logger.error("Failed to initialize table {}.{}", elasticAdminKeyspaceName, ELASTIC_ADMIN_METADATA_TABLE, e);
+            throw e;
+        }
+        return null;
+    }
+
+    // initialize a first row if needed
+    Void insertFirstMetaRow(final MetaData metadata, final String metaDataString) {
+        try {
+            logger.info(insertMetadataQuery);
+            process(ConsistencyLevel.LOCAL_ONE, ClientState.forInternalCalls(), insertMetadataQuery,
+                DatabaseDescriptor.getClusterName(), UUID.fromString(StorageService.instance.getLocalHostId()), metadata.version(), metaDataString);
+        } catch (Exception e) {
+            logger.error("Failed insert first row into table {}.{}",e, elasticAdminKeyspaceName, ELASTIC_ADMIN_METADATA_TABLE);
+            throw e;
+        }
+        return null;
+    }
+
+    void retry (final Supplier<Void> function, final String label) {
+        for (int i = 0; ; ++i) {
+            try {
+                function.get();
+                break;
+            } catch (final Exception e) {
+                if (i >= CREATE_ELASTIC_ADMIN_RETRY_ATTEMPTS) {
+                    logger.error("Failed to {} after {} attempts", label, CREATE_ELASTIC_ADMIN_RETRY_ATTEMPTS);
+                    throw new NoPersistedMetaDataException("Failed to " + label + " after " + CREATE_ELASTIC_ADMIN_RETRY_ATTEMPTS + " attempts", e);
+                } else
+                    logger.info("Retrying: {}", label);
+            }
+        }
+    }
+
     /**
      * Create or update elastic_admin keyspace.
      * @throws IOException 
@@ -2279,27 +2370,23 @@ public class InternalCassandraClusterService extends InternalClusterService {
         if (result.isEmpty()) {
             MetaData metadata = state().metaData();
             try {
-                String metaDataString = MetaData.Builder.toXContent(metadata);
-                
-                Map<String,String> replication = new HashMap<String,String>();
-                replication.put("class", NetworkTopologyStrategy.class.getName());
-                replication.put(DatabaseDescriptor.getLocalDataCenter(), Integer.toString(getLocalDataCenterSize()));
-                
-                String createKeyspace = String.format(Locale.ROOT, "CREATE KEYSPACE IF NOT EXISTS \"%s\" WITH replication = %s;", 
-                        elasticAdminKeyspaceName, FBUtilities.json(replication).replaceAll("\"", "'"));
-                logger.info(createKeyspace);
-                process(ConsistencyLevel.LOCAL_ONE, ClientState.forInternalCalls(), createKeyspace);
-                
-                String createTable =  String.format(Locale.ROOT, "CREATE TABLE IF NOT EXISTS \"%s\".%s ( cluster_name text PRIMARY KEY, owner uuid, version bigint, metadata text) WITH comment='%s';", 
-                        elasticAdminKeyspaceName, ELASTIC_ADMIN_METADATA_TABLE, MetaData.Builder.toXContent(metadata));
-                logger.info(createTable);
-                process(ConsistencyLevel.LOCAL_ONE, ClientState.forInternalCalls(), createTable);
-                
-                // initialize a first row if needed
-                process(ConsistencyLevel.LOCAL_ONE, ClientState.forInternalCalls(), insertMetadataQuery,
-                        DatabaseDescriptor.getClusterName(), UUID.fromString(StorageService.instance.getLocalHostId()), metadata.version(), metaDataString);
-                logger.info("Succefully initialize {}.{} = {}", elasticAdminKeyspaceName, ELASTIC_ADMIN_METADATA_TABLE,metaDataString);
-                writeMetaDataAsComment(metaDataString);
+                final String metaDataString;
+                try {
+                    metaDataString = MetaData.Builder.toXContent(metadata);
+                } catch (IOException e) {
+                    logger.error("Failed to build metadata", e);
+                    throw new NoPersistedMetaDataException("Failed to build metadata", e);
+                }
+                // create elastic_admin if not exists after joining the ring and before allowing metadata update.
+                retry(() -> createElasticAdminKeyspace(), "create elastic admin keyspace");
+                retry(() -> createElasticAdminMetaTable(metaDataString), "create elastic admin metadata table");
+                retry(() -> insertFirstMetaRow(metadata, metaDataString), "write first row to metadata table");
+                logger.info("Succefully initialize {}.{} = {}", elasticAdminKeyspaceName, ELASTIC_ADMIN_METADATA_TABLE, metaDataString);
+                try {
+                    writeMetaDataAsComment(metaDataString);
+                } catch (IOException e) {
+                    logger.error("Failed to write metadata as comment", e);
+                }
             } catch (Throwable e) {
                 logger.error("Failed to initialize table {}.{}",e, elasticAdminKeyspaceName, ELASTIC_ADMIN_METADATA_TABLE);
             }
@@ -2502,7 +2589,7 @@ public class InternalCassandraClusterService extends InternalClusterService {
             } else {
                 Map<String, Object> mapValue = (Map<String, Object>) value;
                 for (int j = 0; j < udt.size(); j++) {
-                    String subName = UTF8Type.instance.compose(udt.fieldName(j));
+                    String subName = UTF8Type.instance.compose(udt.fieldName(j).bytes);
                     AbstractType<?> subType = udt.fieldType(j);
                     Object subValue = mapValue.get(subName);
                     Mapper subMapper = (mapper instanceof ObjectMapper) ? ((ObjectMapper) mapper).getMapper(subName) : null;
@@ -2515,7 +2602,7 @@ public class InternalCassandraClusterService extends InternalClusterService {
             MapSerializer serializer = mapType.getSerializer();
             Map map = (Map)value;
             List<ByteBuffer> buffers = serializer.serializeValues((Map)value);
-            return CollectionSerializer.pack(buffers, map.size(), Server.VERSION_3);
+            return CollectionSerializer.pack(buffers, map.size(), ProtocolVersion.CURRENT);
         } else if (type instanceof CollectionType) {
             AbstractType elementType = (type instanceof ListType) ? ((ListType)type).getElementsType() : ((SetType)type).getElementsType();
             
@@ -2528,7 +2615,7 @@ public class InternalCassandraClusterService extends InternalClusterService {
                     serialize(ksName, cfName, udt.fieldType(1), GeoPointFieldMapper.Names.LON, values.get(0), null)
                 };
                 ByteBuffer geo_point = TupleType.buildValue(elements);
-                return CollectionSerializer.pack(ImmutableList.of(geo_point), 1, Server.VERSION_3);
+                return CollectionSerializer.pack(ImmutableList.of(geo_point), 1, ProtocolVersion.CURRENT);
             } 
             
             if (value instanceof Collection) {
@@ -2538,11 +2625,11 @@ public class InternalCassandraClusterService extends InternalClusterService {
                     ByteBuffer bb = serialize(ksName, cfName, elementType, name, v, mapper);
                     elements.add(bb);
                 }
-                return CollectionSerializer.pack(elements, elements.size(), Server.VERSION_3);
+                return CollectionSerializer.pack(elements, elements.size(), ProtocolVersion.CURRENT);
             } else {
                 // singleton list
                 ByteBuffer bb = serialize(ksName, cfName, elementType, name, value, mapper);
-                return CollectionSerializer.pack(ImmutableList.of(bb), 1, Server.VERSION_3);
+                return CollectionSerializer.pack(ImmutableList.of(bb), 1, ProtocolVersion.CURRENT);
             } 
         } else if (type.getSerializer() instanceof UUIDSerializer) {
             // #74 workaround
@@ -2583,7 +2670,7 @@ public class InternalCassandraClusterService extends InternalClusterService {
                     mapValue.put(GeoPointFieldMapper.Names.LON, deserialize(udt.type(1), components[1], null));
             } else {
                 for (int i = 0; i < components.length; i++) {
-                    String fieldName = UTF8Type.instance.compose(udt.fieldName(i));
+                    String fieldName = UTF8Type.instance.compose(udt.fieldName(i).bytes);
                     AbstractType<?> ctype = udt.type(i);
                     Mapper subMapper = null;
                     if (mapper != null && mapper instanceof ObjectMapper)
@@ -2596,10 +2683,10 @@ public class InternalCassandraClusterService extends InternalClusterService {
         } else if (type instanceof ListType) {
             ListType<?> ltype = (ListType<?>)type;
             ByteBuffer input = bb.duplicate();
-            int size = CollectionSerializer.readCollectionSize(input, Server.VERSION_3);
+            int size = CollectionSerializer.readCollectionSize(input, ProtocolVersion.CURRENT);
             List list = new ArrayList(size);
             for (int i = 0; i < size; i++) {
-                list.add( deserialize(ltype.getElementsType(), CollectionSerializer.readValue(input, Server.VERSION_3), mapper));
+                list.add( deserialize(ltype.getElementsType(), CollectionSerializer.readValue(input, ProtocolVersion.CURRENT), mapper));
             }
             if (input.hasRemaining())
                 throw new MarshalException("Unexpected extraneous bytes after map value");
@@ -2607,10 +2694,10 @@ public class InternalCassandraClusterService extends InternalClusterService {
         } else if (type instanceof SetType) {
             SetType<?> ltype = (SetType<?>)type;
             ByteBuffer input = bb.duplicate();
-            int size = CollectionSerializer.readCollectionSize(input, Server.VERSION_3);
+            int size = CollectionSerializer.readCollectionSize(input, ProtocolVersion.CURRENT);
             Set set = new HashSet(size);
             for (int i = 0; i < size; i++) {
-                set.add( deserialize(ltype.getElementsType(), CollectionSerializer.readValue(input, Server.VERSION_3), mapper));
+                set.add( deserialize(ltype.getElementsType(), CollectionSerializer.readValue(input, ProtocolVersion.CURRENT), mapper));
             }
             if (input.hasRemaining())
                 throw new MarshalException("Unexpected extraneous bytes after map value");
@@ -2618,11 +2705,11 @@ public class InternalCassandraClusterService extends InternalClusterService {
         } else if (type instanceof MapType) {
             MapType<?,?> ltype = (MapType<?,?>)type;
             ByteBuffer input = bb.duplicate();
-            int size = CollectionSerializer.readCollectionSize(input, Server.VERSION_3);
+            int size = CollectionSerializer.readCollectionSize(input, ProtocolVersion.CURRENT);
             Map map = new LinkedHashMap(size);
             for (int i = 0; i < size; i++) {
-                ByteBuffer kbb = CollectionSerializer.readValue(input, Server.VERSION_3);
-                ByteBuffer vbb = CollectionSerializer.readValue(input, Server.VERSION_3);
+                ByteBuffer kbb = CollectionSerializer.readValue(input, ProtocolVersion.CURRENT);
+                ByteBuffer vbb = CollectionSerializer.readValue(input, ProtocolVersion.CURRENT);
                 String key = (String) ltype.getKeysType().compose(kbb);
                 Mapper subMapper = null;
                 if (mapper != null) {
