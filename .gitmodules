@@ -1,3 +1,4 @@
 [submodule "core/cassandra"]
 	path = core/cassandra
 	url = ../cassandra.git
+	branch = filatov-dev
