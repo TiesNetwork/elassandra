@@ -1,3 +1,3 @@
 [submodule "core/cassandra"]
 	path = core/cassandra
-	url = ../cassandra
+	url = ../cassandra.git
