@@ -155,11 +155,13 @@
                 <enabled>false</enabled>
             </snapshots>
         </repository>
+        <!--
         <repository>
             <id>ossrh</id>
             <name>Sonatype OSS Snapshots</name>
             <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
         </repository>
+        -->
         <!--
         <repository>
             <id>Lucene snapshots</id>
