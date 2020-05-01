@@ -955,6 +955,18 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-remote-resources-plugin</artifactId>
                     <version>1.5</version>
+                    <dependencies>
+                        <dependency>
+                            <groupId>com.strapdata.elasticsearch</groupId>
+                            <artifactId>dev-tools</artifactId>
+                            <version>${elasticsearch.version}</version>
+                        </dependency>
+                        <dependency>
+                            <groupId>com.strapdata.elasticsearch</groupId>
+                            <artifactId>rest-api-spec</artifactId>
+                            <version>${elasticsearch.version}</version>
+                        </dependency>
+                    </dependencies>
                     <configuration>
                         <resourceBundles>
                             <resourceBundle>com.strapdata.elasticsearch:dev-tools:${elasticsearch.version}</resourceBundle>
